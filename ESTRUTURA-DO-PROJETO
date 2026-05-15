@@ -1,1 +1,1045 @@
+"""
+setup_moneykids.py
+──────────────────
+Execute este arquivo UMA vez para criar toda a estrutura do projeto MoneyKids.
 
+Como usar:
+    1. Coloque este arquivo em uma pasta vazia (ex: Desktop/moneykids)
+    2. Abra o CMD nessa pasta
+    3. Execute: python setup_moneykids.py
+    4. Pronto! Toda a estrutura será criada automaticamente.
+"""
+
+import os
+
+# ── Cores no terminal ─────────────────────────────────────────────
+VERDE  = "\033[92m"
+AZUL   = "\033[94m"
+RESET  = "\033[0m"
+NEGRITO= "\033[1m"
+
+def criar_arquivo(caminho, conteudo):
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    with open(caminho, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+    print(f"  {VERDE}✔{RESET} {caminho}")
+
+def criar_pasta(caminho):
+    os.makedirs(caminho, exist_ok=True)
+
+print(f"\n{AZUL}{NEGRITO}{'═'*50}{RESET}")
+print(f"{AZUL}{NEGRITO}  💰 MoneyKids — Criando estrutura do projeto...{RESET}")
+print(f"{AZUL}{'═'*50}{RESET}\n")
+
+# ══════════════════════════════════════════════════════════════════
+# ARQUIVOS DA RAIZ
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("run.py", '''\
+from app import create_app
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(debug=True)
+''')
+
+criar_arquivo("requirements.txt", '''\
+flask==3.0.3
+flask-sqlalchemy==3.1.1
+flask-login==0.6.3
+werkzeug==3.0.3
+python-dotenv==1.0.1
+gunicorn==22.0.0
+''')
+
+criar_arquivo(".gitignore", '''\
+venv/
+.env
+*.db
+*.sqlite3
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+tests/relatorio_*.txt
+''')
+
+criar_arquivo("README.md", '''\
+# 💰 MoneyKids
+
+Aplicação web educacional para jovens de 12 a 18 anos aprenderem sobre finanças pessoais.
+
+## Integrantes
+- Gustavo Luiz
+- Gustavo Jonas
+- Gustavo Nunes
+- Yuri
+
+## Tecnologias
+- Python + Flask
+- SQLite (banco de dados local)
+- HTML + CSS + JavaScript
+
+## Como rodar
+
+```bash
+# 1. Crie e ative o ambiente virtual
+python -m venv venv
+venv\\Scripts\\activate      # Windows
+source venv/bin/activate    # Mac/Linux
+
+# 2. Instale as dependências
+pip install -r requirements.txt
+
+# 3. Rode o servidor
+python run.py
+```
+
+Acesse: http://localhost:5000
+
+## Funcionalidades
+- Cadastro e login de usuários
+- Simulador de CDI e renda fixa
+- Módulos educativos sobre investimentos
+- Quiz com pontuação
+- Sistema de conquistas e missões
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# APP/__INIT__.PY
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("app/__init__.py", '''\
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager
+
+db = SQLAlchemy()
+login_manager = LoginManager()
+
+
+def create_app():
+    app = Flask(__name__)
+
+    app.config["SECRET_KEY"] = "troque-por-uma-chave-secreta-forte"
+    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///moneykids.db"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+    db.init_app(app)
+    login_manager.init_app(app)
+    login_manager.login_view = "auth.login"
+    login_manager.login_message = "Faça login para acessar essa página."
+
+    from app.routes.auth import auth_bp
+    from app.routes.dashboard import dashboard_bp
+    from app.routes.simulador import simulador_bp
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(dashboard_bp)
+    app.register_blueprint(simulador_bp)
+
+    with app.app_context():
+        db.create_all()
+
+    return app
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# MODELS
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("app/models/__init__.py", "")
+
+criar_arquivo("app/models/user.py", '''\
+from app import db, login_manager
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+
+
+class User(UserMixin, db.Model):
+    __tablename__ = "users"
+
+    id        = db.Column(db.Integer, primary_key=True)
+    nome      = db.Column(db.String(100), nullable=False)
+    email     = db.Column(db.String(150), unique=True, nullable=False)
+    senha_hash= db.Column(db.String(256), nullable=False)
+    idade     = db.Column(db.Integer, nullable=True)
+    pontos    = db.Column(db.Integer, default=0)
+    criado_em = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_senha(self, senha):
+        self.senha_hash = generate_password_hash(senha)
+
+    def check_senha(self, senha):
+        return check_password_hash(self.senha_hash, senha)
+
+    def __repr__(self):
+        return f"<User {self.email}>"
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# ROUTES
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("app/routes/__init__.py", "")
+
+criar_arquivo("app/routes/auth.py", '''\
+from flask import Blueprint, render_template, redirect, url_for, flash, request
+from flask_login import login_user, logout_user, login_required, current_user
+from app import db
+from app.models.user import User
+
+auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+
+
+@auth_bp.route("/cadastro", methods=["GET", "POST"])
+def cadastro():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard.index"))
+
+    if request.method == "POST":
+        nome  = request.form.get("nome", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        senha = request.form.get("senha", "")
+        idade = request.form.get("idade", None)
+
+        if not nome or not email or not senha:
+            flash("Preencha todos os campos obrigatórios.", "erro")
+            return render_template("cadastro.html")
+
+        if len(senha) < 6:
+            flash("A senha precisa ter pelo menos 6 caracteres.", "erro")
+            return render_template("cadastro.html")
+
+        if User.query.filter_by(email=email).first():
+            flash("Este e-mail já está cadastrado. Faça login.", "erro")
+            return redirect(url_for("auth.login"))
+
+        usuario = User(nome=nome, email=email, idade=idade)
+        usuario.set_senha(senha)
+        db.session.add(usuario)
+        db.session.commit()
+
+        flash("Conta criada com sucesso! Faça login para continuar.", "sucesso")
+        return redirect(url_for("auth.login"))
+
+    return render_template("cadastro.html")
+
+
+@auth_bp.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard.index"))
+
+    if request.method == "POST":
+        email   = request.form.get("email", "").strip().lower()
+        senha   = request.form.get("senha", "")
+        lembrar = request.form.get("lembrar") == "on"
+
+        usuario = User.query.filter_by(email=email).first()
+        if not usuario or not usuario.check_senha(senha):
+            flash("E-mail ou senha incorretos.", "erro")
+            return render_template("login.html")
+
+        login_user(usuario, remember=lembrar)
+        flash(f"Bem-vindo de volta, {usuario.nome}! 👋", "sucesso")
+        proxima = request.args.get("next")
+        return redirect(proxima or url_for("dashboard.dashboard"))
+
+    return render_template("login.html")
+
+
+@auth_bp.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    flash("Você saiu da sua conta.", "info")
+    return redirect(url_for("auth.login"))
+''')
+
+criar_arquivo("app/routes/dashboard.py", '''\
+from flask import Blueprint, render_template
+from flask_login import login_required, current_user
+
+dashboard_bp = Blueprint("dashboard", __name__)
+
+
+@dashboard_bp.route("/")
+def index():
+    return render_template("index.html")
+
+
+@dashboard_bp.route("/dashboard")
+@login_required
+def dashboard():
+    return render_template("dashboard.html", usuario=current_user)
+''')
+
+criar_arquivo("app/routes/simulador.py", '''\
+from flask import Blueprint, render_template, request
+from flask_login import login_required
+
+simulador_bp = Blueprint("simulador", __name__, url_prefix="/simular")
+
+TAXA_CDI_ANUAL = 0.1065  # 10,65% ao ano (valor de referência)
+
+
+def calcular_cdi(principal, meses, percentual_cdi):
+    taxa = TAXA_CDI_ANUAL * (percentual_cdi / 100)
+    montante = principal * ((1 + taxa) ** (meses / 12))
+    rendimento = montante - principal
+    return round(montante, 2), round(rendimento, 2)
+
+
+@simulador_bp.route("/", methods=["GET", "POST"])
+@login_required
+def simulador():
+    resultado = None
+    erro = None
+
+    if request.method == "POST":
+        try:
+            principal      = float(request.form.get("principal", 0))
+            meses          = int(request.form.get("meses", 0))
+            percentual_cdi = float(request.form.get("percentual_cdi", 100))
+
+            if principal <= 0:
+                erro = "O valor investido deve ser maior que zero."
+            elif meses <= 0:
+                erro = "O período deve ser de pelo menos 1 mês."
+            else:
+                montante, rendimento = calcular_cdi(principal, meses, percentual_cdi)
+                resultado = {
+                    "principal":      f"{principal:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "montante":       f"{montante:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "rendimento":     f"{rendimento:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                    "meses":          meses,
+                    "percentual_cdi": percentual_cdi,
+                }
+        except (ValueError, TypeError):
+            erro = "Insira apenas números válidos nos campos."
+
+    return render_template("simulador.html", resultado=resultado, erro=erro)
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# TEMPLATES
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("app/templates/base.html", '''\
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}MoneyKids{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  {% block head_extras %}{% endblock %}
+</head>
+<body>
+  <nav class="navbar">
+    <a href="{{ url_for('dashboard.index') }}" class="navbar-logo">💰 Money<span>Kids</span></a>
+    <div class="navbar-links">
+      {% if current_user.is_authenticated %}
+        <a href="{{ url_for('dashboard.dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('simulador.simulador') }}">Simular</a>
+        <a href="{{ url_for('auth.logout') }}">Sair</a>
+      {% else %}
+        <a href="{{ url_for('auth.login') }}">Entrar</a>
+        <a href="{{ url_for('auth.cadastro') }}" class="btn-nav">Criar conta</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-wrapper">
+        {% for categoria, mensagem in messages %}
+          <div class="flash flash-{{ categoria }}">
+            {% if categoria == \'sucesso\' %}✅{% elif categoria == \'erro\' %}❌{% else %}ℹ️{% endif %}
+            {{ mensagem }}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main>{% block conteudo %}{% endblock %}</main>
+
+  <footer>
+    <strong>MoneyKids</strong> · Educação financeira para jovens · 2025
+  </footer>
+</body>
+</html>
+''')
+
+criar_arquivo("app/templates/index.html", '''\
+{% extends "base.html" %}
+{% block title %}MoneyKids — Educação financeira para jovens{% endblock %}
+{% block conteudo %}
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-texto">
+      <div class="hero-badge">🎓 Para jovens de 12 a 18 anos</div>
+      <h1 class="hero-titulo">
+        Aprenda a fazer<br>
+        o seu dinheiro<br>
+        <span class="destaque">trabalhar por você</span>
+      </h1>
+      <p class="hero-desc">
+        Simuladores reais, missões e conteúdo direto ao ponto sobre CDI,
+        FIIs, ações e renda passiva. Sem enrolação.
+      </p>
+      <div class="hero-acoes">
+        {% if current_user.is_authenticated %}
+          <a href="{{ url_for(\'dashboard.dashboard\') }}" class="btn btn-primario">Ir para o dashboard →</a>
+        {% else %}
+          <a href="{{ url_for(\'auth.cadastro\') }}" class="btn btn-primario">Começar de graça →</a>
+          <a href="{{ url_for(\'auth.login\') }}" class="btn btn-secundario">Já tenho conta</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="como-funciona">
+  <div class="container">
+    <div class="section-tag">Como funciona</div>
+    <h2 class="section-titulo">Três passos para dominar suas finanças</h2>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-num">01</div>
+        <div class="step-icon">📚</div>
+        <div class="step-titulo">Aprenda os conceitos</div>
+        <p class="step-desc">Módulos curtos sobre CDI, ações, FIIs e renda passiva.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">02</div>
+        <div class="step-icon">🧮</div>
+        <div class="step-titulo">Simule investimentos</div>
+        <p class="step-desc">Veja na prática quanto seu dinheiro rende.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">03</div>
+        <div class="step-icon">🏆</div>
+        <div class="step-titulo">Ganhe conquistas</div>
+        <p class="step-desc">Complete missões, acumule pontos e suba de nível.</p>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+''')
+
+criar_arquivo("app/templates/login.html", '''\
+{% extends "base.html" %}
+{% block title %}Entrar — MoneyKids{% endblock %}
+{% block conteudo %}
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <h1 class="auth-titulo">Entrar</h1>
+    <p class="auth-sub">Bem-vindo de volta!</p>
+    <form method="POST" action="{{ url_for(\'auth.login\') }}">
+      <div class="campo">
+        <label for="email">E-mail</label>
+        <input type="email" id="email" name="email" required placeholder="seu@email.com" />
+      </div>
+      <div class="campo">
+        <label for="senha">Senha</label>
+        <input type="password" id="senha" name="senha" required placeholder="••••••••" />
+      </div>
+      <div class="campo-check">
+        <input type="checkbox" id="lembrar" name="lembrar" />
+        <label for="lembrar">Lembrar de mim</label>
+      </div>
+      <button type="submit" class="btn btn-primario btn-full">Entrar</button>
+    </form>
+    <p class="auth-link">Não tem conta? <a href="{{ url_for(\'auth.cadastro\') }}">Criar conta</a></p>
+  </div>
+</div>
+{% endblock %}
+''')
+
+criar_arquivo("app/templates/cadastro.html", '''\
+{% extends "base.html" %}
+{% block title %}Criar conta — MoneyKids{% endblock %}
+{% block conteudo %}
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <h1 class="auth-titulo">Criar conta</h1>
+    <p class="auth-sub">Comece a aprender sobre finanças hoje!</p>
+    <form method="POST" action="{{ url_for(\'auth.cadastro\') }}">
+      <div class="campo">
+        <label for="nome">Nome</label>
+        <input type="text" id="nome" name="nome" required placeholder="Seu nome completo" />
+      </div>
+      <div class="campo">
+        <label for="email">E-mail</label>
+        <input type="email" id="email" name="email" required placeholder="seu@email.com" />
+      </div>
+      <div class="campo">
+        <label for="senha">Senha <span class="campo-hint">(mínimo 6 caracteres)</span></label>
+        <input type="password" id="senha" name="senha" required placeholder="••••••••" minlength="6" />
+      </div>
+      <div class="campo">
+        <label for="idade">Idade</label>
+        <input type="number" id="idade" name="idade" min="10" max="18" placeholder="12" />
+      </div>
+      <button type="submit" class="btn btn-primario btn-full">Criar conta</button>
+    </form>
+    <p class="auth-link">Já tem conta? <a href="{{ url_for(\'auth.login\') }}">Entrar</a></p>
+  </div>
+</div>
+{% endblock %}
+''')
+
+criar_arquivo("app/templates/dashboard.html", '''\
+{% extends "base.html" %}
+{% block title %}Dashboard — MoneyKids{% endblock %}
+{% block conteudo %}
+<div class="container" style="padding-top: 3rem; padding-bottom: 3rem;">
+  <h1 class="dash-titulo">Olá, {{ usuario.nome.split()[0] }} 👋</h1>
+  <p class="dash-sub">Continue aprendendo e acumulando pontos!</p>
+
+  <div class="dash-cards">
+    <div class="dash-card">
+      <div class="dash-card-label">Pontos</div>
+      <div class="dash-card-valor">{{ usuario.pontos }} ⭐</div>
+    </div>
+    <div class="dash-card">
+      <div class="dash-card-label">Nível</div>
+      <div class="dash-card-valor">Iniciante</div>
+    </div>
+    <div class="dash-card">
+      <div class="dash-card-label">Sequência</div>
+      <div class="dash-card-valor">🔥 1 dia</div>
+    </div>
+  </div>
+
+  <div class="dash-missao">
+    <div class="dash-missao-titulo">🎯 Missão do dia</div>
+    <p>Faça uma simulação de investimento no CDI</p>
+    <a href="{{ url_for(\'simulador.simulador\') }}" class="btn btn-primario">Ir para o simulador →</a>
+  </div>
+</div>
+{% endblock %}
+''')
+
+criar_arquivo("app/templates/simulador.html", '''\
+{% extends "base.html" %}
+{% block title %}Simulador de CDI — MoneyKids{% endblock %}
+{% block conteudo %}
+<div class="container" style="padding-top: 3rem; padding-bottom: 3rem; max-width: 600px;">
+  <h1 class="dash-titulo">Simulador de CDI 📈</h1>
+  <p class="dash-sub">Veja quanto seu dinheiro rende investindo em renda fixa.</p>
+
+  <div class="sim-form-card">
+    <form method="POST" action="{{ url_for(\'simulador.simulador\') }}">
+      <div class="campo">
+        <label for="principal">Valor inicial (R$)</label>
+        <input type="number" id="principal" name="principal" min="1" step="0.01"
+               required placeholder="1000" value="{{ request.form.get(\'principal\', \'\') }}" />
+      </div>
+      <div class="campo">
+        <label for="meses">Período (meses)</label>
+        <input type="number" id="meses" name="meses" min="1" max="360"
+               required placeholder="12" value="{{ request.form.get(\'meses\', \'\') }}" />
+      </div>
+      <div class="campo">
+        <label for="percentual_cdi">% do CDI</label>
+        <input type="number" id="percentual_cdi" name="percentual_cdi"
+               min="1" max="300" step="0.1"
+               placeholder="100" value="{{ request.form.get(\'percentual_cdi\', \'\') }}" />
+        <span class="campo-hint">Ex: 100 = 100% do CDI. Poupança ≈ 70%.</span>
+      </div>
+      <button type="submit" class="btn btn-primario btn-full">Calcular rendimento</button>
+    </form>
+  </div>
+
+  {% if erro %}
+    <div class="sim-erro">❌ {{ erro }}</div>
+  {% endif %}
+
+  {% if resultado %}
+    <div class="sim-resultado-card">
+      <div class="sim-resultado-titulo">📊 Resultado da simulação</div>
+      <div class="sim-linha">
+        <span>Valor investido</span>
+        <span>R$ {{ resultado.principal }}</span>
+      </div>
+      <div class="sim-linha">
+        <span>Período</span>
+        <span>{{ resultado.meses }} meses</span>
+      </div>
+      <div class="sim-linha">
+        <span>Taxa CDI utilizada</span>
+        <span>{{ resultado.percentual_cdi }}%</span>
+      </div>
+      <div class="sim-linha destaque">
+        <span>Rendimento bruto</span>
+        <span class="verde">+ R$ {{ resultado.rendimento }}</span>
+      </div>
+      <div class="sim-total">
+        <span>Total ao final</span>
+        <span class="sim-total-valor">R$ {{ resultado.montante }}</span>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# STATIC — CSS
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("app/static/style.css", '''\
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --verde:        #00C46A;
+  --verde-neon:   #AAFF66;
+  --preto:        #0D0D0D;
+  --cinza-escuro: #141414;
+  --cinza-medio:  #1E1E1E;
+  --cinza-borda:  #2A2A2A;
+  --cinza-texto:  #888;
+  --branco:       #F5F5F5;
+  --fonte-titulo: \'Syne\', sans-serif;
+  --fonte-corpo:  \'DM Sans\', sans-serif;
+  --raio:    12px;
+  --raio-lg: 20px;
+}
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--fonte-corpo);
+  background: var(--preto);
+  color: var(--branco);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.6;
+}
+a { color: inherit; text-decoration: none; }
+main { flex: 1; }
+
+/* ── Navbar ── */
+.navbar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(13,13,13,0.9);
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--cinza-borda);
+  padding: 0 2rem; height: 64px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.navbar-logo {
+  font-family: var(--fonte-titulo);
+  font-size: 1.3rem; font-weight: 800;
+  color: var(--verde-neon); letter-spacing: -0.02em;
+}
+.navbar-logo span { color: var(--branco); font-weight: 400; }
+.navbar-links { display: flex; align-items: center; gap: 8px; }
+.navbar-links a {
+  font-size: 0.85rem; font-weight: 500; color: var(--cinza-texto);
+  padding: 6px 14px; border-radius: 8px;
+  transition: color 0.2s, background 0.2s;
+}
+.navbar-links a:hover { color: var(--branco); background: var(--cinza-medio); }
+.btn-nav {
+  font-size: 0.85rem !important; font-weight: 600 !important;
+  color: var(--preto) !important; background: var(--verde-neon) !important;
+  padding: 8px 18px !important; border-radius: 8px !important;
+}
+
+/* ── Flash ── */
+.flash-wrapper { padding: 1rem 2rem 0; display: flex; flex-direction: column; gap: 8px; }
+.flash {
+  padding: 12px 18px; border-radius: var(--raio);
+  font-size: 0.875rem; font-weight: 500;
+  display: flex; align-items: center; gap: 10px;
+  animation: slideDown 0.3s ease;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.flash-sucesso { background: rgba(0,196,106,0.12); border: 1px solid rgba(0,196,106,0.3); color: #4dffaa; }
+.flash-erro    { background: rgba(255,80,80,0.10);  border: 1px solid rgba(255,80,80,0.3);  color: #ff8080; }
+.flash-info    { background: rgba(100,160,255,0.10);border: 1px solid rgba(100,160,255,0.3);color: #99bbff; }
+
+/* ── Footer ── */
+footer {
+  border-top: 1px solid var(--cinza-borda);
+  padding: 2rem; text-align: center;
+  font-size: 0.8rem; color: var(--cinza-texto);
+}
+footer strong { color: var(--verde-neon); font-family: var(--fonte-titulo); }
+
+/* ── Utilitários ── */
+.container { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-family: var(--fonte-corpo); font-size: 0.95rem; font-weight: 600;
+  padding: 12px 28px; border-radius: var(--raio); border: none;
+  cursor: pointer; transition: transform 0.15s, opacity 0.15s; text-decoration: none;
+}
+.btn:hover  { transform: translateY(-1px); opacity: 0.92; }
+.btn:active { transform: translateY(0); }
+.btn-primario  { background: var(--verde-neon); color: var(--preto); }
+.btn-secundario{ background: var(--cinza-medio); color: var(--branco); border: 1px solid var(--cinza-borda); }
+.btn-full { width: 100%; margin-top: 0.5rem; }
+
+/* ── Hero ── */
+.hero {
+  min-height: calc(100vh - 64px);
+  display: flex; align-items: center;
+  padding: 5rem 2rem; position: relative; overflow: hidden;
+}
+.hero::before {
+  content: \'\'; position: absolute; inset: 0;
+  background-image: radial-gradient(circle, rgba(170,255,102,0.1) 1px, transparent 1px);
+  background-size: 32px 32px; pointer-events: none;
+}
+.hero-inner { max-width: 1100px; margin: 0 auto; width: 100%; position: relative; z-index: 1; }
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 0.78rem; font-weight: 600; color: var(--verde-neon);
+  background: rgba(170,255,102,0.08); border: 1px solid rgba(170,255,102,0.2);
+  padding: 6px 14px; border-radius: 100px; margin-bottom: 1.5rem;
+  letter-spacing: 0.05em; text-transform: uppercase;
+}
+.hero-titulo {
+  font-family: var(--fonte-titulo);
+  font-size: clamp(2.4rem, 5vw, 3.8rem);
+  font-weight: 800; line-height: 1.05;
+  letter-spacing: -0.03em; margin-bottom: 1.25rem;
+}
+.hero-titulo .destaque { color: var(--verde-neon); }
+.hero-desc { font-size: 1.05rem; color: var(--cinza-texto); line-height: 1.7; margin-bottom: 2.5rem; max-width: 460px; }
+.hero-acoes { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ── Como funciona ── */
+.como-funciona { padding: 6rem 2rem; border-top: 1px solid var(--cinza-borda); }
+.section-tag { font-size: 0.78rem; font-weight: 600; color: var(--verde-neon); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.75rem; }
+.section-titulo { font-family: var(--fonte-titulo); font-size: clamp(1.8rem, 3vw, 2.6rem); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 3.5rem; }
+.steps-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.5rem; }
+.step-card {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 2rem;
+  transition: border-color 0.25s, transform 0.25s;
+}
+.step-card:hover { border-color: rgba(170,255,102,0.3); transform: translateY(-4px); }
+.step-num { font-family: var(--fonte-titulo); font-size: 2.5rem; font-weight: 800; color: rgba(170,255,102,0.15); line-height: 1; margin-bottom: 1rem; }
+.step-icon { font-size: 1.8rem; margin-bottom: 0.75rem; }
+.step-titulo { font-family: var(--fonte-titulo); font-size: 1.05rem; font-weight: 700; margin-bottom: 0.5rem; }
+.step-desc { font-size: 0.88rem; color: var(--cinza-texto); line-height: 1.6; }
+
+/* ── Auth ── */
+.auth-wrapper { display: flex; align-items: center; justify-content: center; padding: 4rem 2rem; min-height: calc(100vh - 130px); }
+.auth-card {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 2.5rem; width: 100%; max-width: 420px;
+}
+.auth-titulo { font-family: var(--fonte-titulo); font-size: 1.8rem; font-weight: 800; margin-bottom: 0.25rem; }
+.auth-sub { color: var(--cinza-texto); font-size: 0.95rem; margin-bottom: 2rem; }
+.auth-link { text-align: center; font-size: 0.88rem; color: var(--cinza-texto); margin-top: 1.5rem; }
+.auth-link a { color: var(--verde-neon); font-weight: 500; }
+
+/* ── Campos de formulário ── */
+.campo { display: flex; flex-direction: column; gap: 6px; margin-bottom: 1rem; }
+.campo label { font-size: 0.88rem; font-weight: 500; color: var(--branco); }
+.campo input {
+  background: var(--cinza-medio); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio); padding: 10px 14px;
+  color: var(--branco); font-family: var(--fonte-corpo); font-size: 0.95rem;
+  transition: border-color 0.2s;
+}
+.campo input:focus { outline: none; border-color: var(--verde-neon); }
+.campo input::placeholder { color: var(--cinza-texto); }
+.campo-hint { font-size: 0.78rem; color: var(--cinza-texto); }
+.campo-check { display: flex; align-items: center; gap: 8px; margin-bottom: 1rem; font-size: 0.88rem; color: var(--cinza-texto); }
+
+/* ── Dashboard ── */
+.dash-titulo { font-family: var(--fonte-titulo); font-size: 2rem; font-weight: 800; margin-bottom: 0.25rem; }
+.dash-sub { color: var(--cinza-texto); margin-bottom: 2rem; }
+.dash-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; margin-bottom: 2rem; }
+.dash-card {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 1.5rem;
+}
+.dash-card-label { font-size: 0.82rem; color: var(--cinza-texto); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.dash-card-valor { font-family: var(--fonte-titulo); font-size: 1.6rem; font-weight: 800; }
+.dash-missao {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 2rem;
+}
+.dash-missao-titulo { font-family: var(--fonte-titulo); font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.dash-missao p { color: var(--cinza-texto); margin-bottom: 1.5rem; }
+
+/* ── Simulador ── */
+.sim-form-card {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 2rem; margin-bottom: 1.5rem;
+}
+.sim-erro {
+  background: rgba(255,80,80,0.1); border: 1px solid rgba(255,80,80,0.3);
+  color: #ff8080; padding: 12px 18px; border-radius: var(--raio);
+  font-size: 0.9rem; margin-bottom: 1rem;
+}
+.sim-resultado-card {
+  background: var(--cinza-escuro); border: 1px solid rgba(170,255,102,0.3);
+  border-radius: var(--raio-lg); padding: 2rem;
+}
+.sim-resultado-titulo { font-family: var(--fonte-titulo); font-size: 1.1rem; font-weight: 700; margin-bottom: 1.25rem; }
+.sim-linha {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--cinza-borda);
+  font-size: 0.92rem; color: var(--cinza-texto);
+}
+.sim-linha.destaque { color: var(--branco); font-weight: 500; }
+.verde { color: var(--verde-neon); }
+.sim-total {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 1rem 0 0; margin-top: 0.5rem;
+  font-size: 0.95rem; font-weight: 600;
+}
+.sim-total-valor { font-family: var(--fonte-titulo); font-size: 1.8rem; font-weight: 800; color: var(--verde-neon); }
+
+@media (max-width: 768px) {
+  .steps-grid  { grid-template-columns: 1fr; }
+  .dash-cards  { grid-template-columns: 1fr; }
+  .navbar-links a:not(.btn-nav) { display: none; }
+}
+''')
+
+criar_arquivo("app/static/script.js", '''\
+// script.js — MoneyKids
+// Scripts gerais da aplicação
+
+// Auto-dismiss flash messages após 4 segundos
+document.addEventListener("DOMContentLoaded", function () {
+  const flashes = document.querySelectorAll(".flash");
+  flashes.forEach(function (el) {
+    setTimeout(function () {
+      el.style.transition = "opacity 0.5s";
+      el.style.opacity = "0";
+      setTimeout(function () { el.remove(); }, 500);
+    }, 4000);
+  });
+});
+''')
+
+# ══════════════════════════════════════════════════════════════════
+# TESTS
+# ══════════════════════════════════════════════════════════════════
+
+criar_arquivo("tests/__init__.py", "")
+
+criar_arquivo("tests/base_test.py", '''\
+import unittest
+from app import create_app, db
+from app.models.user import User
+
+
+class BaseTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.app = create_app()
+        self.app.config.update({
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "SECRET_KEY": "chave-de-teste",
+        })
+        self.client = self.app.test_client()
+        with self.app.app_context():
+            db.create_all()
+
+    def tearDown(self):
+        with self.app.app_context():
+            db.session.remove()
+            db.drop_all()
+
+    def criar_usuario(self, nome="Teste", email="teste@teste.com", senha="senha123", idade=15):
+        with self.app.app_context():
+            u = User(nome=nome, email=email, idade=idade)
+            u.set_senha(senha)
+            db.session.add(u)
+            db.session.commit()
+
+    def login(self, email="teste@teste.com", senha="senha123"):
+        return self.client.post("/auth/login", data={"email": email, "senha": senha}, follow_redirects=True)
+
+    def logout(self):
+        return self.client.get("/auth/logout", follow_redirects=True)
+''')
+
+criar_arquivo("tests/test_auth.py", '''\
+from tests.base_test import BaseTestCase
+
+
+class TestCadastro(BaseTestCase):
+
+    def test_cadastro_valido(self):
+        r = self.client.post("/auth/cadastro", data={"nome":"Ana","email":"ana@teste.com","senha":"senha123","idade":16}, follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"sucesso", r.data.lower())
+
+    def test_cadastro_email_duplicado(self):
+        self.criar_usuario(email="ana@teste.com")
+        r = self.client.post("/auth/cadastro", data={"nome":"Ana2","email":"ana@teste.com","senha":"senha123","idade":16}, follow_redirects=True)
+        self.assertIn(b"cadastrado", r.data.lower())
+
+    def test_senha_curta(self):
+        r = self.client.post("/auth/cadastro", data={"nome":"X","email":"x@x.com","senha":"123","idade":15}, follow_redirects=True)
+        self.assertNotIn(b"sucesso", r.data.lower())
+
+
+class TestLogin(BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.criar_usuario()
+
+    def test_login_correto(self):
+        r = self.login()
+        self.assertIn(b"dashboard", r.data.lower())
+
+    def test_login_senha_errada(self):
+        r = self.login(senha="errada")
+        self.assertIn(b"incorretos", r.data.lower())
+
+    def test_dashboard_sem_login(self):
+        r = self.client.get("/dashboard", follow_redirects=True)
+        self.assertIn(b"login", r.data.lower())
+''')
+
+criar_arquivo("tests/test_simulador.py", '''\
+import unittest
+from tests.base_test import BaseTestCase
+
+
+class TestCalculoCDI(unittest.TestCase):
+
+    def calcular(self, principal, meses, pct, taxa=0.1065):
+        taxa_ef = taxa * (pct / 100)
+        montante = principal * ((1 + taxa_ef) ** (meses / 12))
+        return round(montante, 2), round(montante - principal, 2)
+
+    def test_rendimento_positivo(self):
+        _, rend = self.calcular(1000, 12, 100)
+        self.assertGreater(rend, 0)
+
+    def test_valor_zero(self):
+        m, r = self.calcular(0, 12, 100)
+        self.assertEqual(m, 0.0)
+
+    def test_periodo_maior_rende_mais(self):
+        _, r6  = self.calcular(1000, 6,  100)
+        _, r12 = self.calcular(1000, 12, 100)
+        self.assertLess(r6, r12)
+
+
+class TestRotaSimulador(BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.criar_usuario()
+        self.login()
+
+    def test_pagina_carrega(self):
+        r = self.client.get("/simular/")
+        self.assertEqual(r.status_code, 200)
+
+    def test_campo_invalido_nao_crasha(self):
+        r = self.client.post("/simular/", data={"principal":"abc","meses":"12","percentual_cdi":"100"}, follow_redirects=True)
+        self.assertNotEqual(r.status_code, 500)
+''')
+
+criar_arquivo("executar_testes.py", '''\
+"""
+Executa todos os testes automatizados do MoneyKids.
+
+Uso:
+    python executar_testes.py
+    python executar_testes.py auth
+    python executar_testes.py simulador
+"""
+import unittest, sys, time
+from datetime import datetime
+
+VERDE="\033[92m"; VERMELHO="\033[91m"; AZUL="\033[94m"; RESET="\033[0m"; NEGRITO="\033[1m"
+
+MODULOS = {
+    "auth":      "tests.test_auth",
+    "simulador": "tests.test_simulador",
+}
+
+def main():
+    print(f"\n{AZUL}{NEGRITO}{'═'*50}{RESET}")
+    print(f"{AZUL}{NEGRITO}  💰 MoneyKids — Testes Automatizados{RESET}")
+    print(f"{AZUL}{'═'*50}{RESET}\n")
+
+    loader = unittest.TestLoader()
+    modulo = sys.argv[1] if len(sys.argv) > 1 else None
+
+    if modulo:
+        if modulo not in MODULOS:
+            print(f"Módulo inválido. Use: {', '.join(MODULOS.keys())}")
+            sys.exit(1)
+        suite = loader.loadTestsFromName(MODULOS[modulo])
+    else:
+        suite = unittest.TestSuite()
+        for m in MODULOS.values():
+            suite.addTests(loader.loadTestsFromName(m))
+
+    inicio = time.time()
+    runner = unittest.TextTestRunner(verbosity=2)
+    resultado = runner.run(suite)
+    tempo = time.time() - inicio
+
+    passou = resultado.testsRun - len(resultado.failures) - len(resultado.errors)
+    print(f"\n{AZUL}{'═'*50}{RESET}")
+    print(f"  Total: {resultado.testsRun} | {VERDE}Passou: {passou}{RESET} | {VERMELHO}Falhou: {len(resultado.failures)+len(resultado.errors)}{RESET} | Tempo: {tempo:.2f}s")
+    print(f"{AZUL}{'═'*50}{RESET}\n")
+    sys.exit(0 if resultado.wasSuccessful() else 1)
+
+if __name__ == "__main__":
+    main()
+''')
+
+print(f"\n{AZUL}{'═'*50}{RESET}")
+print(f"{VERDE}{NEGRITO}  ✅ Projeto criado com sucesso!{RESET}")
+print(f"{AZUL}{'═'*50}{RESET}")
+print(f"""
+  Próximos passos:
+
+  1. {NEGRITO}Crie o ambiente virtual:{RESET}
+     python -m venv venv
+
+  2. {NEGRITO}Ative o ambiente virtual:{RESET}
+     venv\\Scripts\\activate   (Windows)
+
+  3. {NEGRITO}Instale as dependências:{RESET}
+     pip install -r requirements.txt
+
+  4. {NEGRITO}Rode o servidor:{RESET}
+     python run.py
+
+  5. {NEGRITO}Acesse no navegador:{RESET}
+     http://localhost:5000
+""")
+print(f"{AZUL}{'═'*50}{RESET}\n")
