@@ -19,7 +19,9 @@ RESET  = "\033[0m"
 NEGRITO= "\033[1m"
 
 def criar_arquivo(caminho, conteudo):
-    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    pasta = os.path.dirname(caminho)
+    if pasta:
+        os.makedirs(pasta, exist_ok=True)
     with open(caminho, "w", encoding="utf-8") as f:
         f.write(conteudo)
     print(f"  {VERDE}✔{RESET} {caminho}")
@@ -50,6 +52,7 @@ flask-sqlalchemy==3.1.1
 flask-login==0.6.3
 werkzeug==3.0.3
 python-dotenv==1.0.1
+requests==2.31.0
 gunicorn==22.0.0
 ''')
 
@@ -137,10 +140,12 @@ def create_app():
     from app.routes.auth import auth_bp
     from app.routes.dashboard import dashboard_bp
     from app.routes.simulador import simulador_bp
+    from app.routes.cotacoes import cotacoes_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(simulador_bp)
+    app.register_blueprint(cotacoes_bp)
 
     with app.app_context():
         db.create_all()
@@ -332,6 +337,172 @@ def simulador():
     return render_template("simulador.html", resultado=resultado, erro=erro)
 ''')
 
+criar_arquivo("app/routes/cotacoes.py", '''\
+"""
+app/routes/cotacoes.py
+───────────────────────
+Rota IoT que busca cotações reais de APIs públicas gratuitas
+e as exibe no dashboard do MoneyKids.
+
+APIs utilizadas:
+  - BrasilAPI  → CDI, Selic, IPCA (dados do Banco Central)
+  - AwesomeAPI → Dólar, Euro, Bitcoin em tempo real
+"""
+
+from flask import Blueprint, render_template, jsonify
+from flask_login import login_required
+import requests
+from datetime import datetime
+
+cotacoes_bp = Blueprint("cotacoes", __name__, url_prefix="/cotacoes")
+
+# Tempo máximo de espera por cada API (segundos)
+TIMEOUT = 6
+
+
+def buscar_dolar():
+    try:
+        r = requests.get(
+            "https://economia.awesomeapi.com.br/json/last/USD-BRL",
+            timeout=TIMEOUT
+        )
+        d = r.json()["USDBRL"]
+        valor = float(d["bid"])
+        variacao = float(d["pctChange"])
+        return {
+            "valor": f"R$ {valor:.2f}",
+            "variacao": f"{variacao:+.2f}%",
+            "sinal": "alta" if variacao >= 0 else "baixa",
+            "ok": True,
+        }
+    except Exception:
+        return {"valor": "Indisponível", "variacao": "--", "sinal": "neutro", "ok": False}
+
+
+def buscar_euro():
+    try:
+        r = requests.get(
+            "https://economia.awesomeapi.com.br/json/last/EUR-BRL",
+            timeout=TIMEOUT
+        )
+        d = r.json()["EURBRL"]
+        valor = float(d["bid"])
+        variacao = float(d["pctChange"])
+        return {
+            "valor": f"R$ {valor:.2f}",
+            "variacao": f"{variacao:+.2f}%",
+            "sinal": "alta" if variacao >= 0 else "baixa",
+            "ok": True,
+        }
+    except Exception:
+        return {"valor": "Indisponível", "variacao": "--", "sinal": "neutro", "ok": False}
+
+
+def buscar_bitcoin():
+    try:
+        r = requests.get(
+            "https://economia.awesomeapi.com.br/json/last/BTC-BRL",
+            timeout=TIMEOUT
+        )
+        d = r.json()["BTCBRL"]
+        valor = float(d["bid"])
+        variacao = float(d["pctChange"])
+        return {
+            "valor": f"R$ {valor:,.0f}".replace(",", "."),
+            "variacao": f"{variacao:+.2f}%",
+            "sinal": "alta" if variacao >= 0 else "baixa",
+            "ok": True,
+        }
+    except Exception:
+        return {"valor": "Indisponível", "variacao": "--", "sinal": "neutro", "ok": False}
+
+
+def buscar_cdi():
+    try:
+        r = requests.get(
+            "https://brasilapi.com.br/api/taxas/v1",
+            timeout=TIMEOUT
+        )
+        taxas = r.json()
+        cdi = next((t for t in taxas if t.get("nome", "").upper() == "CDI"), None)
+        if cdi:
+            return {
+                "valor": f"{cdi[\'valor\']:.2f}% ao ano",
+                "ok": True,
+            }
+        return {"valor": "Indisponível", "ok": False}
+    except Exception:
+        return {"valor": "Indisponível", "ok": False}
+
+
+def buscar_selic():
+    try:
+        r = requests.get(
+            "https://brasilapi.com.br/api/taxas/v1",
+            timeout=TIMEOUT
+        )
+        taxas = r.json()
+        selic = next((t for t in taxas if t.get("nome", "").upper() == "SELIC"), None)
+        if selic:
+            return {
+                "valor": f"{selic[\'valor\']:.2f}% ao ano",
+                "ok": True,
+            }
+        return {"valor": "Indisponível", "ok": False}
+    except Exception:
+        return {"valor": "Indisponível", "ok": False}
+
+
+def buscar_ipca():
+    try:
+        r = requests.get(
+            "https://brasilapi.com.br/api/taxas/v1",
+            timeout=TIMEOUT
+        )
+        taxas = r.json()
+        ipca = next((t for t in taxas if t.get("nome", "").upper() == "IPCA"), None)
+        if ipca:
+            return {
+                "valor": f"{ipca[\'valor\']:.2f}% ao ano",
+                "ok": True,
+            }
+        return {"valor": "Indisponível", "ok": False}
+    except Exception:
+        return {"valor": "Indisponível", "ok": False}
+
+
+@cotacoes_bp.route("/")
+@login_required
+def cotacoes():
+    """Página principal com painel de cotações."""
+    dados = {
+        "dolar":     buscar_dolar(),
+        "euro":      buscar_euro(),
+        "bitcoin":   buscar_bitcoin(),
+        "cdi":       buscar_cdi(),
+        "selic":     buscar_selic(),
+        "ipca":      buscar_ipca(),
+        "atualizado": datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+    }
+    return render_template("cotacoes.html", dados=dados)
+
+
+@cotacoes_bp.route("/api")
+@login_required
+def cotacoes_api():
+    """Endpoint JSON para atualização via JavaScript (sem recarregar a página)."""
+    dados = {
+        "dolar":     buscar_dolar(),
+        "euro":      buscar_euro(),
+        "bitcoin":   buscar_bitcoin(),
+        "cdi":       buscar_cdi(),
+        "selic":     buscar_selic(),
+        "ipca":      buscar_ipca(),
+        "atualizado": datetime.now().strftime("%d/%m/%Y às %H:%M:%S"),
+    }
+    return jsonify(dados)
+''')
+
 # ══════════════════════════════════════════════════════════════════
 # TEMPLATES
 # ══════════════════════════════════════════════════════════════════
@@ -356,6 +527,7 @@ criar_arquivo("app/templates/base.html", '''\
       {% if current_user.is_authenticated %}
         <a href="{{ url_for('dashboard.dashboard') }}">Dashboard</a>
         <a href="{{ url_for('simulador.simulador') }}">Simular</a>
+        <a href="{{ url_for('cotacoes.cotacoes') }}">Cotações 📡</a>
         <a href="{{ url_for('auth.logout') }}">Sair</a>
       {% else %}
         <a href="{{ url_for('auth.login') }}">Entrar</a>
@@ -534,6 +706,12 @@ criar_arquivo("app/templates/dashboard.html", '''\
     <p>Faça uma simulação de investimento no CDI</p>
     <a href="{{ url_for(\'simulador.simulador\') }}" class="btn btn-primario">Ir para o simulador →</a>
   </div>
+
+  <div class="dash-missao" style="margin-top: 1.5rem; border-color: rgba(170,255,102,0.2);">
+    <div class="dash-missao-titulo">📡 Mercado agora</div>
+    <p style="margin-bottom: 1rem;">Acompanhe as cotações do mercado financeiro em tempo real.</p>
+    <a href="{{ url_for(\'cotacoes.cotacoes\') }}" class="btn btn-outline">Ver cotações ao vivo →</a>
+  </div>
 </div>
 {% endblock %}
 ''')
@@ -599,6 +777,115 @@ criar_arquivo("app/templates/simulador.html", '''\
     </div>
   {% endif %}
 </div>
+{% endblock %}
+''')
+
+criar_arquivo("app/templates/cotacoes.html", '''\
+{% extends "base.html" %}
+{% block title %}Cotações ao Vivo — MoneyKids{% endblock %}
+{% block conteudo %}
+<div class="container" style="padding-top: 2.5rem; padding-bottom: 3rem;">
+
+  <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:0.5rem; flex-wrap:wrap; gap:1rem;">
+    <div>
+      <h1 class="dash-titulo">📡 Cotações ao Vivo</h1>
+      <p class="dash-sub">Dados reais do mercado financeiro atualizados automaticamente.</p>
+    </div>
+    <div id="status-atualizacao" style="font-size:0.8rem; color:var(--cinza-texto);">
+      Atualizado: {{ dados.atualizado }}
+    </div>
+  </div>
+
+  <!-- Indicadores econômicos -->
+  <div style="font-size:0.75rem; font-weight:600; color:var(--verde-neon); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.75rem; margin-top:1.5rem;">
+    Indicadores do Brasil
+  </div>
+  <div class="cot-grid" style="margin-bottom:2rem;">
+    <div class="cot-card">
+      <div class="cot-label">📈 CDI</div>
+      <div class="cot-valor {% if dados.cdi.ok %}verde{% endif %}">{{ dados.cdi.valor }}</div>
+      <div class="cot-desc">Rendimento da renda fixa</div>
+    </div>
+    <div class="cot-card">
+      <div class="cot-label">🏦 Selic</div>
+      <div class="cot-valor {% if dados.selic.ok %}verde{% endif %}">{{ dados.selic.valor }}</div>
+      <div class="cot-desc">Taxa básica de juros</div>
+    </div>
+    <div class="cot-card">
+      <div class="cot-label">🔥 Inflação (IPCA)</div>
+      <div class="cot-valor {% if dados.ipca.ok %}amarelo{% endif %}">{{ dados.ipca.valor }}</div>
+      <div class="cot-desc">Inflação oficial do Brasil</div>
+    </div>
+  </div>
+
+  <!-- Moedas e criptos -->
+  <div style="font-size:0.75rem; font-weight:600; color:var(--verde-neon); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:0.75rem;">
+    Moedas e Criptomoedas
+  </div>
+  <div class="cot-grid">
+    <div class="cot-card">
+      <div class="cot-label">💵 Dólar (USD)</div>
+      <div class="cot-valor {% if dados.dolar.ok %}azul{% endif %}">{{ dados.dolar.valor }}</div>
+      <div class="cot-variacao cot-{{ dados.dolar.sinal }}">{{ dados.dolar.variacao }} hoje</div>
+    </div>
+    <div class="cot-card">
+      <div class="cot-label">💶 Euro (EUR)</div>
+      <div class="cot-valor {% if dados.euro.ok %}azul{% endif %}">{{ dados.euro.valor }}</div>
+      <div class="cot-variacao cot-{{ dados.euro.sinal }}">{{ dados.euro.variacao }} hoje</div>
+    </div>
+    <div class="cot-card">
+      <div class="cot-label">₿ Bitcoin (BTC)</div>
+      <div class="cot-valor {% if dados.bitcoin.ok %}amarelo{% endif %}">{{ dados.bitcoin.valor }}</div>
+      <div class="cot-variacao cot-{{ dados.bitcoin.sinal }}">{{ dados.bitcoin.variacao }} hoje</div>
+    </div>
+  </div>
+
+  <!-- Dica educativa -->
+  <div class="cot-dica">
+    <div class="cot-dica-titulo">💡 O que isso significa para você?</div>
+    <p>
+      Com o <strong>CDI em {{ dados.cdi.valor }}</strong>, cada R$ 1.000 investidos em renda fixa
+      rende cerca de R$ {{ ((dados.cdi.valor | string).split('%')[0] | float / 100 * 1000) | round(2) if dados.cdi.ok else "..." }}
+      por ano. Use o <a href="{{ url_for(\'simulador.simulador\') }}" style="color:var(--verde-neon)">simulador</a>
+      para calcular o valor exato com seu investimento!
+    </p>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts_extras %}
+<script>
+// Atualiza as cotações a cada 60 segundos sem recarregar a página
+async function atualizarCotacoes() {
+  try {
+    const r = await fetch("/cotacoes/api");
+    const d = await r.json();
+
+    document.getElementById("status-atualizacao").textContent =
+      "Atualizado: " + d.atualizado;
+
+    // Atualiza cada valor dinamicamente
+    const campos = {
+      "cot-cdi":     { val: d.cdi.valor,     cls: d.cdi.ok ? "verde" : "" },
+      "cot-selic":   { val: d.selic.valor,   cls: d.selic.ok ? "verde" : "" },
+      "cot-ipca":    { val: d.ipca.valor,    cls: d.ipca.ok ? "amarelo" : "" },
+      "cot-dolar":   { val: d.dolar.valor,   cls: d.dolar.ok ? "azul" : "" },
+      "cot-euro":    { val: d.euro.valor,    cls: d.euro.ok ? "azul" : "" },
+      "cot-bitcoin": { val: d.bitcoin.valor, cls: d.bitcoin.ok ? "amarelo" : "" },
+    };
+    for (const [id, info] of Object.entries(campos)) {
+      const el = document.getElementById(id);
+      if (el) { el.textContent = info.val; el.className = "cot-valor " + info.cls; }
+    }
+  } catch(e) {
+    console.log("Erro ao atualizar cotações:", e);
+  }
+}
+
+// Atualiza a cada 60 segundos
+setInterval(atualizarCotacoes, 60000);
+</script>
 {% endblock %}
 ''')
 
@@ -819,9 +1106,36 @@ footer strong { color: var(--verde-neon); font-family: var(--fonte-titulo); }
 }
 .sim-total-valor { font-family: var(--fonte-titulo); font-size: 1.8rem; font-weight: 800; color: var(--verde-neon); }
 
+/* ── Cotações IoT ── */
+.cot-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; }
+.cot-card {
+  background: var(--cinza-escuro); border: 1px solid var(--cinza-borda);
+  border-radius: var(--raio-lg); padding: 1.5rem;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.cot-card:hover { border-color: rgba(170,255,102,0.25); transform: translateY(-3px); }
+.cot-label { font-size: 0.82rem; color: var(--cinza-texto); margin-bottom: 0.5rem; }
+.cot-valor { font-family: var(--fonte-titulo); font-size: 1.6rem; font-weight: 800; margin-bottom: 0.25rem; }
+.cot-desc  { font-size: 0.78rem; color: var(--cinza-texto); }
+.cot-variacao { font-size: 0.82rem; font-weight: 600; margin-top: 0.25rem; }
+.verde   { color: #AAFF66; }
+.azul    { color: #64b5ff; }
+.amarelo { color: #ffc107; }
+.cot-alta  { color: #4dffaa; }
+.cot-baixa { color: #ff6b6b; }
+.cot-neutro{ color: var(--cinza-texto); }
+.cot-dica {
+  margin-top: 2rem; background: var(--cinza-escuro);
+  border: 1px solid rgba(170,255,102,0.2);
+  border-radius: var(--raio-lg); padding: 1.5rem;
+}
+.cot-dica-titulo { font-family: var(--fonte-titulo); font-weight: 700; margin-bottom: 0.5rem; }
+.cot-dica p { font-size: 0.9rem; color: var(--cinza-texto); line-height: 1.7; }
+
 @media (max-width: 768px) {
   .steps-grid  { grid-template-columns: 1fr; }
   .dash-cards  { grid-template-columns: 1fr; }
+  .cot-grid    { grid-template-columns: 1fr; }
   .navbar-links a:not(.btn-nav) { display: none; }
 }
 ''')
